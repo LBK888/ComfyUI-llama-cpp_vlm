@@ -6,6 +6,7 @@ from unittest.mock import Mock, patch
 
 from support import h3_story_enhancer as h3
 from support.h3_story_enhancer import H3_MODES, _search_templates, enhance_story
+from support.h3_system_prompts import ALIGNMENTS, BASE_FIELDS, MODE_GUIDES, REF_FIELDS
 from support.instruct_completion import complete_instruct
 
 
@@ -58,10 +59,11 @@ class H3Tests(unittest.TestCase):
         ))
         selected = _search_templates(brief)[0]
         complete = Mock(side_effect=[('{"mode":"2ref2va", "template":1}', "stop"), ("Shot plan", "stop"), (final, "stop")])
-        self.assertEqual(enhance_story("auto", content, [], "", complete, video_input=False), final)
+        self.assertEqual(enhance_story("auto", content, [], complete, video_input=False), final)
         route, plan, writing = [call.args[0] for call in complete.call_args_list]
         self.assertIn("Attached images: 2", route[-1]["content"])
         self.assertIn(selected["mechanism"], plan[0]["content"])
+        self.assertIn(MODE_GUIDES["2ref2va"], writing[0]["content"])
         self.assertEqual(writing[-1]["content"][1:], [picture, picture])
         self.assertIn(brief, writing[-1]["content"][0]["text"])
         self.assertIn("Shot plan", writing[-1]["content"][0]["text"])
@@ -82,13 +84,19 @@ class H3Tests(unittest.TestCase):
                 if mode in alignments:
                     final = alignments[mode] + "\n\n" + final
                 complete = Mock(side_effect=[('{"mode":"t2va","template":0}', "stop"), ("Plan", "stop"), (final, "stop")])
-                self.assertEqual(enhance_story(mode, "Brief", [], "", complete, video_input=False), final)
-                self.assertIn(f"for {mode}.", complete.call_args.args[0][0]["content"])
+                self.assertEqual(enhance_story(mode, "Brief", [], complete, video_input=False), final)
+                guide = complete.call_args.args[0][0]["content"]
+                fields = REF_FIELDS if mode.endswith("ref2va") else BASE_FIELDS
+                self.assertIn(f"for {mode}.", guide)
+                self.assertIn(MODE_GUIDES[mode], guide)
+                self.assertTrue(guide.endswith("\n".join(field + ":" for field in fields)))
+                for alignment_mode, line in ALIGNMENTS.items():
+                    self.assertEqual(line in guide, mode == alignment_mode)
 
     def test_truncated_plan_does_not_trigger_writing(self):
         complete = Mock(side_effect=[('{"mode":"t2va","template":0}', "stop"), ("Partial plan", "length")])
         with self.assertRaisesRegex(RuntimeError, "story planning reached a generation limit"):
-            enhance_story("auto", "Brief", [], "", complete, video_input=False)
+            enhance_story("auto", "Brief", [], complete, video_input=False)
         self.assertEqual(complete.call_count, 2)
 
     def test_invalid_reference_summary_gets_one_repair(self):
@@ -98,7 +106,7 @@ class H3Tests(unittest.TestCase):
         fixed = draft.replace("summary: Action.", "summary: [reference generation] Action.")
         complete = Mock(side_effect=[('{"mode":"1ref2va","template":0}', "stop"), ("Plan", "stop"),
                                      (draft, "stop"), (fixed, "stop")])
-        self.assertEqual(enhance_story("auto", "Brief", [], "", complete, video_input=False), fixed)
+        self.assertEqual(enhance_story("auto", "Brief", [], complete, video_input=False), fixed)
         self.assertEqual(complete.call_args.args[1], "H3 format correction")
         self.assertIn("Start the summary body with the H3 task prefix", complete.call_args.args[0][0]["content"])
 

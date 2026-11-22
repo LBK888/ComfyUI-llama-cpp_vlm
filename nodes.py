@@ -504,7 +504,11 @@ class llama_cpp_instruct_adv:
                 "llama_model": ("LLAMACPPMODEL",),
                 "preset_prompt": (preset_tags, {"default": preset_tags[1]}),
                 "custom_prompt": ("STRING", {"default": "", "multiline": True, "placeholder": 'user_prompt\n\nFor preset hints marked with an "*", this will be used to fill the placeholder (e.g., Object names in BBox detection)\nOtherwise, this will override the preset prompts.'}),
-                "system_prompt": ("STRING", {"multiline": True, "default": ""}),
+                "system_prompt": ("STRING", {
+                    "multiline": True, "default": "",
+                    "placeholder": "Used only when H3_story_enhancer is off. Enter all H3 requirements in custom_prompt.",
+                    "tooltip": "H3 modes ignore this field and use their built-in system prompts.",
+                }),
                 "inference_mode": (["one by one", "images", "video"], {
                     "default": "one by one",
                     "tooltip": "one by one: Process each item in the input list one by one (multi-image batch inside an item will be inferred together)\nimages:  \tCombine ALL images across all list items into 1 single prompt\nvideo:  \tTreat each image item in the list as a separate video clip"
@@ -542,7 +546,7 @@ class llama_cpp_instruct_adv:
                 "queue_handler": (any_type, {"tooltip": "Used to control the execution order of instruct nodes."}),
                 "H3_story_enhancer": (list(H3_MODES), {
                     "default": "off",
-                    "tooltip": "MiniMax H3 story routing, shot planning and prompt writing. Enter the story in custom_prompt. Auto infers the generation mode.",
+                    "tooltip": "MiniMax H3 story routing, shot planning and prompt writing. Put the story and style requirements in custom_prompt. Enabled modes disable system_prompt.",
                 }),
             },
         }
@@ -595,13 +599,15 @@ class llama_cpp_instruct_adv:
         
         last_sys_prompt = LLAMA_CPP_STORAGE.sys_prompts.get(uid)
         video_input = inference_mode == "video"
-        system_prompts = "请将输入的图片序列当做视频而不是静态帧序列, " + system_prompt if video_input else system_prompt
-        state_prompt = system_prompts if h3_mode == "off" else (system_prompts, h3_mode)
+        system_prompts = ""
+        if h3_mode == "off":
+            system_prompts = "请将输入的图片序列当做视频而不是静态帧序列, " + system_prompt if video_input else system_prompt
+        state_prompt = system_prompts if h3_mode == "off" else (h3_mode, video_input)
         messages = []
         if last_sys_prompt == state_prompt and save_states:
             print(f"[llama-cpp_vlm] Loading state and history id={uid}...")
             messages = list(LLAMA_CPP_STORAGE.messages.get(uid, []))
-        if not messages and h3_mode == "off" and system_prompts.strip():
+        if not messages and system_prompts.strip():
             messages.append({"role": "system", "content": system_prompts})
 
         llm = LLAMA_CPP_STORAGE.llm
@@ -628,7 +634,7 @@ class llama_cpp_instruct_adv:
         def answer(chat):
             try:
                 if h3_mode != "off":
-                    return enhance_story(h3_mode, chat[-1]["content"], chat[:-1], system_prompt, complete, video_input=video_input)
+                    return enhance_story(h3_mode, chat[-1]["content"], chat[:-1], complete, video_input=video_input)
                 return complete(chat)[0]
             except Exception:
                 if force_offload:

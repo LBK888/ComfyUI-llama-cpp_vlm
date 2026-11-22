@@ -43,7 +43,7 @@ Instruct 的文字和影像輸出都會移除思考區段，包含 Qwen 模板�
 
 ### H3_story_enhancer
 
-在 `Llama-cpp Instruct` 的 `custom_prompt` 貼上故事，從 `H3_story_enhancer` 選擇模式。欄位接在既有 widgets 後面，預設 `off`，舊工作流可以照常開啟。啟用後會使用 `custom_prompt` 作為原始需求，`system_prompt` 可補充和原要求相容的風格偏好。
+在 `Llama-cpp Instruct` 的 `custom_prompt` 填寫故事、指定台詞、片長和風格，從 `H3_story_enhancer` 選擇模式。欄位接在既有 widgets 後面，預設 `off`，舊工作流可以照常開啟。啟用 H3 時，`system_prompt` 會停用，系統提示由所選模式提供。切回 `off` 時，原先儲存的 `system_prompt` 會恢復使用。
 
 | 模式 | 用途 |
 | --- | --- |

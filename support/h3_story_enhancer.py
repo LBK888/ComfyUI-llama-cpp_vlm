@@ -5,6 +5,10 @@ from collections import Counter
 from functools import lru_cache
 from pathlib import Path
 
+from .h3_system_prompts import (
+    ALIGNMENTS, BASE_FIELDS, MODE_GUIDES, PRESERVE_BRIEF, REF_FIELDS, REF_TASKS, writing_system_prompt,
+)
+
 
 _MODES = {
     "1ref2va": "One reference asset supplies identity, appearance, action, style, or sound.",
@@ -21,34 +25,6 @@ _SUPPORT_DIR = Path(__file__).resolve().parent
 _T8_CATALOG = _SUPPORT_DIR.parent / "minimax-h3-prompt-skill-T8" / "catalog" / "template-index.json"
 _STANDALONE_TEMPLATES = {"stage-two-turn-pause-reaction", "build-earned-arrival-journey"}
 _logger = logging.getLogger("llama-cpp_vlm")
-
-_BASE_FIELDS = ("integrated_multimodal_description", "overall_soundscape", "non_diegetic_music")
-_REF_FIELDS = ("subject_definitions", "summary", "retention_analysis", "detailed_description", *_BASE_FIELDS[1:])
-_ALIGNMENTS = {
-    "i2va": "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.",
-    "flf2va": "How the reference pictures align with the target video — Picture 1 (from Shot 1) aligns with the 0.00-second mark of the target video; Picture 2 (from Shot N) aligns with the S.SS-second mark of the target video.",
-    "l2va": "How the reference pictures align with the target video — <Picture 1> (from [Shot N]) aligns with the S.SS-second mark of the target video.",
-}
-_MODE_GUIDES = {
-    "1ref2va": "Bind the requested attributes to the one supplied asset. An appearance reference can define one or more <Subject N> entries. Only create entries for content with an actual role.",
-    "2ref2va": "Map both assets explicitly. Keep identities separate when they represent different people; combine the sources only when they define the same subject or supply different attributes of that subject.",
-    "Nref2va": "Map each used asset and its distinct role, including which shots it affects. Number pictures, videos and audio separately. Keep character identities, reference features and assigned roles consistent across cuts.",
-    "i2va": "Open on the exact framing, pose and spatial layout of Picture 1. Show a plausible onset of motion and a visible consequence without resetting the scene.",
-    "flf2va": "Plan a visible chain of intermediate poses, prop states and framing changes that physically links the two images. Use one continuous shot by default and reach Picture 2 at the end.",
-    "l2va": "Work backward from Picture 1 to plan a plausible opening. Bring the moving subject, props and framing into alignment with the last frame.",
-    "t2va": "Build all visible subjects, action and sound from the brief. Establish the scene without reference labels or a frame-alignment line.",
-}
-
-_PRESERVE_BRIEF = """The original brief is authoritative for plot, cast, required actions, constraints, requested duration, and dialogue. Preserve exact lines, lyrics, and visible text verbatim in their original language. Use examples as inspiration when they are labeled as examples. Preserve a request for silence. Keep explicit duration, or use 15 seconds when omitted. Fill only gaps needed to make the scene clear and filmable."""
-
-_SHOT_GUIDE = """Write the prompt in English apart from speech, lyrics and visible text. Make each beat observable through blocking, gaze, physical actions, composition, light, and synchronized sound. Keep identities, clothing, props and spatial relationships consistent. Make required actions visible from onset to result. Prefer a clear hook, progression, and closing reaction when the story permits. Start with [Shot 1] without a timestamp. Start any later [Shot N] with an increasing cut time such as At 00:04.200, inside the duration. Use motivated cuts and specify useful camera moves in the shot prose.
-Assign (S1), (S2), etc. by first actual vocal event and keep them stable independently of <Subject N>. Use <d>[language name] spoken words</d>, for example <d>[Chinese] 我等你。</d>. Keep quotation marks that merely delimit the line, acting directions, and gestures outside the tag. Put visible text in double quotes. Put dialogue and diegetic audio in the shot narrative. Limit overall_soundscape to ambience, physical sounds, and nonverbal sounds. Describe audience-only music in non_diegetic_music or use N/A when there is none."""
-
-_REF_TASKS = ("reference generation", "keyframe completion", "video continuation", "video editing", "audio reuse", "audio reference")
-_REF_GUIDE = """Define each reusable visible element as <Subject N> with its asset provenance. Define a standalone <Picture N> only for a structural image anchor, <Video N> for the whole-video role, and <Audio N> for reused or referenced audio. Keep these labels in angle brackets throughout.
-Begin the summary body with the task in brackets, for example summary: [reference generation] ... for identity or style guidance. Put task labels only in this summary prefix. Use the roles that apply from reference generation, keyframe completion, video continuation, video editing, audio reuse, and audio reference. Join multiple roles with ' + ' inside the same brackets.
-In retention_analysis, put each definition on its own line with its shot coverage and retention marker (fully_preserved, partially_preserved, attribute_transfer or weak_reference for visual content). Describe audio reuse versus audio guidance as appropriate. A change of pose, location, or framing alone preserves identity. Keep asset references at the corresponding action or sound in detailed_description."""
-
 
 def _keywords(text):
     words = set()
@@ -135,8 +111,8 @@ def _format_issue(prompt, mode, fields):
     if tuple(header[1] for header in headers) != fields:
         return f"Write exactly these fields in order: {', '.join(fields)}."
     alignment = prompt[:headers[0].start()].strip()
-    if mode in _ALIGNMENTS:
-        expected = re.escape(_ALIGNMENTS[mode])
+    if mode in ALIGNMENTS:
+        expected = re.escape(ALIGNMENTS[mode])
         expected = expected.replace(re.escape("Shot N"), r"Shot [1-9]\d*").replace(re.escape("S.SS"), r"\d+\.\d{2}")
         if not re.fullmatch(expected, alignment):
             return "Use the required opening alignment line with the actual shot index and two-decimal duration."
@@ -148,14 +124,14 @@ def _format_issue(prompt, mode, fields):
     empty = [field for field, body in sections.items() if not body]
     if empty:
         return f"Complete the empty fields: {', '.join(empty)}."
-    if fields == _REF_FIELDS:
+    if fields == REF_FIELDS:
         prefix = re.match(r"\[([^\]]+)\]\s+\S", sections["summary"])
-        if not prefix or any(task not in _REF_TASKS for task in prefix[1].split(" + ")):
+        if not prefix or any(task not in REF_TASKS for task in prefix[1].split(" + ")):
             return "Start the summary body with the H3 task prefix, such as [reference generation]."
     return None
 
 
-def enhance_story(mode, user_content, history, system_prompt, complete, *, video_input):
+def enhance_story(mode, user_content, history, complete, *, video_input):
     if mode not in H3_MODES[1:]:
         raise ValueError(f"Unknown H3_story_enhancer mode: {mode}")
 
@@ -199,22 +175,12 @@ Candidate story patterns:
         pattern = f"{card['title']}: {card['mechanism']}\nStructure cues: {anchors}"
 
     plan = _stage_answer(complete, "H3 story planning", f"""Turn the brief into a concise shooting plan in the user's language. Use the supplied pattern only where it supports the story. Preserve the user's intent over any template cue. Give each beat a visible action and consequence, coherent staging, a motivated camera decision and sound when useful. Track reference roles, dialogue, and continuity. Check that actions and dialogue fit the requested runtime. Return the plan only.
-{_PRESERVE_BRIEF}
-Mode: {_MODES[mode]} {_MODE_GUIDES[mode]}
+{PRESERVE_BRIEF}
+Mode: {_MODES[mode]} {MODE_GUIDES[mode]}
 Story pattern: {pattern}""", story)
 
-    fields = _REF_FIELDS if mode.endswith("ref2va") else _BASE_FIELDS
-    format_guide = "Return exactly these fields in order: " + ", ".join(field + ":" for field in fields)
-    if mode in _ALIGNMENTS:
-        format_guide += f"\nStart with this alignment line followed by a blank line; resolve N to the last shot index and S.SS to the duration (two decimals):\n{_ALIGNMENTS[mode]}"
-    if fields == _REF_FIELDS:
-        format_guide += f"\n{_REF_GUIDE}"
-    style = f"\nAdditional style preferences (apply only if compatible with the H3 format and original brief):\n{system_prompt}" if system_prompt.strip() else ""
-    writing_guide = f"""Write one ready-to-use MiniMax H3 prompt for {mode}. Use the shooting plan for staging and camera details and the original brief to verify facts and required lines. Check timing, continuity, asset roles and exact dialogue before answering. Output only the prompt, with no title, commentary, or markdown fences.
-{_PRESERVE_BRIEF}
-{_MODE_GUIDES[mode]}
-{_SHOT_GUIDE}
-{format_guide}{style}"""
+    fields = REF_FIELDS if mode.endswith("ref2va") else BASE_FIELDS
+    writing_guide = writing_system_prompt(mode, fields)
     prompt = _stage_answer(complete, "H3 prompt writing", writing_guide, f"{story}\n\nShooting plan:\n{plan}", history=history, media=media)
     issue = _format_issue(prompt, mode, fields)
     if issue:
