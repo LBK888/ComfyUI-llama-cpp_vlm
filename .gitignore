@@ -5,3 +5,5 @@ checkpoints/
 *.egg-info
 .pytest_cache
 .DS_Store
+/minimax-h3-prompt-skill-T8/
+/my ref2AV system prompt.txt

@@ -13,6 +13,8 @@ from PIL import Image, ImageDraw
 from scipy.ndimage import gaussian_filter
 from .support.cqdm import cqdm
 from .support.gguf_layers import get_layer_count
+from .support.h3_story_enhancer import H3_MODES, enhance_story
+from .support.instruct_completion import complete_instruct
 from .support.prompt_enhancer_preset import *
 
 import folder_paths
@@ -538,6 +540,10 @@ class llama_cpp_instruct_adv:
                 "parameters": ("LLAMACPPARAMS",),
                 "images": ("IMAGE",),
                 "queue_handler": (any_type, {"tooltip": "Used to control the execution order of instruct nodes."}),
+                "H3_story_enhancer": (list(H3_MODES), {
+                    "default": "off",
+                    "tooltip": "MiniMax H3 story routing, shot planning and prompt writing. Enter the story in custom_prompt. Auto infers the generation mode.",
+                }),
             },
         }
     
@@ -558,7 +564,7 @@ class llama_cpp_instruct_adv:
                         item["image_url"]["url"] = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAACXBIWXMAAAsTAAALEwEAmpwYAAAADElEQVQImWP4//8/AAX+Av5Y8msOAAAAAElFTkSuQmCC"
         return clean_messages
     
-    def process(self, llama_model, preset_prompt, custom_prompt, system_prompt, inference_mode, max_frames, max_size, seed, force_offload, save_states, unique_id, parameters=None, images=None, queue_handler=None):
+    def process(self, llama_model, preset_prompt, custom_prompt, system_prompt, inference_mode, max_frames, max_size, seed, force_offload, save_states, unique_id, parameters=None, images=None, queue_handler=None, H3_story_enhancer="off"):
         # 解包 INPUT_IS_LIST 参数
         llama_model = llama_model[0] if isinstance(llama_model, list) else llama_model
         preset_prompt = preset_prompt[0] if isinstance(preset_prompt, list) else preset_prompt
@@ -572,47 +578,67 @@ class llama_cpp_instruct_adv:
         save_states = save_states[0] if isinstance(save_states, list) else save_states
         unique_id = unique_id[0] if isinstance(unique_id, list) else unique_id
         parameters = parameters[0] if isinstance(parameters, list) and parameters else parameters
+        h3_mode = H3_story_enhancer[0] if isinstance(H3_story_enhancer, list) else H3_story_enhancer
+        if h3_mode != "off" and not custom_prompt.strip():
+            raise ValueError("H3_story_enhancer requires a story in custom_prompt.")
 
         if not LLAMA_CPP_STORAGE.llm:
             LLAMA_CPP_STORAGE.load_model(llama_model)
         
         LLAMA_CPP_STORAGE.ensure_embedding_mode(False)
             
-        if parameters is None:
-            parameters = {}
-            
+        _parameters = dict(parameters or {})
         if _MTMD:
-            parameters.pop("present_penalty", None)
-            
-        _uid = parameters.get("state_uid", None)
-        _parameters = parameters.copy()
-        _parameters.pop("state_uid", None)
+            _parameters.pop("present_penalty", None)
+        _uid = _parameters.pop("state_uid", None)
         uid = str(unique_id).rpartition('.')[-1] if _uid in (None, -1) else str(_uid)
         
-        last_sys_prompt = LLAMA_CPP_STORAGE.sys_prompts.get(f"{uid}", None)
+        last_sys_prompt = LLAMA_CPP_STORAGE.sys_prompts.get(uid)
         video_input = inference_mode == "video"
         system_prompts = "请将输入的图片序列当做视频而不是静态帧序列, " + system_prompt if video_input else system_prompt
-        
-        if last_sys_prompt != system_prompts:
-            messages = []
-            LLAMA_CPP_STORAGE.clean_state(uid)
-            LLAMA_CPP_STORAGE.sys_prompts[f"{uid}"] = system_prompts
-            if system_prompts.strip():
-                messages.append({"role": "system", "content": system_prompts})
-        else:
-            if save_states:
-                try:
-                    print(f"[llama-cpp_vlm] Loading state and history id={uid}...")
-                    messages = LLAMA_CPP_STORAGE.messages.get(f"{uid}", [])
-                except Exception:
-                    messages = []
-            else:
-                messages = []
+        state_prompt = system_prompts if h3_mode == "off" else (system_prompts, h3_mode)
+        messages = []
+        if last_sys_prompt == state_prompt and save_states:
+            print(f"[llama-cpp_vlm] Loading state and history id={uid}...")
+            messages = list(LLAMA_CPP_STORAGE.messages.get(uid, []))
+        if not messages and h3_mode == "off" and system_prompts.strip():
+            messages.append({"role": "system", "content": system_prompts})
+
+        llm = LLAMA_CPP_STORAGE.llm
+        handler = LLAMA_CPP_STORAGE.chat_handler
+        qwen_handler = Qwen35ChatHandler is not None and isinstance(handler, Qwen35ChatHandler)
+        prefilled_thinking = qwen_handler and getattr(handler, "enable_thinking", False)
+
+        def clear_qwen_context():
+            if qwen_handler:
+                llm.n_tokens = 0
+                llm._ctx.memory_clear(True)
+                if llm.is_hybrid and llm._hybrid_cache_mgr is not None:
+                    llm._hybrid_cache_mgr.clear()
+
+        def complete(chat, stage="Instruct"):
+            if mm.processing_interrupted():
+                raise mm.InterruptProcessingException()
+            try:
+                return complete_instruct(llm, chat, seed, _parameters, stage=stage, prefilled_thinking=prefilled_thinking)
+            finally:
+                if h3_mode != "off":
+                    clear_qwen_context()
+
+        def answer(chat):
+            try:
+                if h3_mode != "off":
+                    return enhance_story(h3_mode, chat[-1]["content"], chat[:-1], system_prompt, complete, video_input=video_input)
+                return complete(chat)[0]
+            except Exception:
+                if force_offload:
+                    LLAMA_CPP_STORAGE.clean()
+                raise
                 
         out1 = ""
         out2 = []
         user_content = []
-        if custom_prompt.strip() and "*" not in preset_prompt:
+        if h3_mode != "off" or (custom_prompt.strip() and "*" not in preset_prompt):
             user_content.append({"type": "text", "text": custom_prompt})
         else:
             p = preset_prompts[preset_prompt].replace("#", custom_prompt.strip()).replace("@", "video" if video_input else "image")
@@ -656,8 +682,7 @@ class llama_cpp_instruct_adv:
                         })
                         
                     curr_messages = messages + [{"role": "user", "content": curr_user_content}]
-                    output = LLAMA_CPP_STORAGE.llm.create_chat_completion(messages=curr_messages, seed=seed, **_parameters)
-                    text = output['choices'][0]['message']['content'].removeprefix(": ").lstrip()
+                    text = answer(curr_messages)
                     
                     out2.append(text)
                     if len(image_groups) > 1:
@@ -683,13 +708,7 @@ class llama_cpp_instruct_adv:
                     })
                     
                 messages.append({"role": "user", "content": user_content})
-                output = LLAMA_CPP_STORAGE.llm.create_chat_completion(messages=messages, seed=seed, **_parameters)
-                raw_text = output['choices'][0]['message']['content'].removeprefix(": ").lstrip()
-                
-                # 使用正则剔除 <think>...</think> 及其包含的所有内容
-                clean_text = re.sub(r'<think>.*?(?:</think>|$)', '', raw_text, flags=re.DOTALL).strip()
-                
-                out1 = clean_text
+                out1 = answer(messages)
                 out2 = [out1]
                 
             # 3. VIDEO 模式：把 list 里的每个 item 各自当成一个视频独立推理
@@ -713,8 +732,7 @@ class llama_cpp_instruct_adv:
                         })
                         
                     curr_messages = messages + [{"role": "user", "content": curr_user_content}]
-                    output = LLAMA_CPP_STORAGE.llm.create_chat_completion(messages=curr_messages, seed=seed, **_parameters)
-                    text = output['choices'][0]['message']['content'].removeprefix(": ").lstrip()
+                    text = answer(curr_messages)
                     
                     out2.append(text)
                     if len(image_groups) > 1:
@@ -727,33 +745,22 @@ class llama_cpp_instruct_adv:
             # 纯文本模式
             text_string = "".join([item["text"] for item in user_content if item.get("type") == "text"])
             messages.append({"role": "user", "content": text_string})
-            output = LLAMA_CPP_STORAGE.llm.create_chat_completion(messages=messages, seed=seed, **_parameters)
-            raw_text = output['choices'][0]['message']['content'].removeprefix(": ").lstrip()
-            
-            # 使用正则剔除 <think>...</think> 及其包含的所有内容
-            clean_text = re.sub(r'<think>.*?(?:</think>|$)', '', raw_text, flags=re.DOTALL).strip()
-            
-            out1 = clean_text
+            out1 = answer(messages)
             out2 = [out1]
             
         if save_states:
             print(f"[llama-cpp_vlm] Saving state id={uid}...")
             messages.append({"role": "assistant", "content": out1})
             clear_message = self.sanitize_messages(messages)
-            LLAMA_CPP_STORAGE.messages[f"{uid}"] = clear_message
+            LLAMA_CPP_STORAGE.messages[uid] = clear_message
+            LLAMA_CPP_STORAGE.sys_prompts[uid] = state_prompt
         else:
             LLAMA_CPP_STORAGE.clean_state(uid)
         
         if force_offload:
             LLAMA_CPP_STORAGE.clean()
-        else:
-            if LLAMA_CPP_STORAGE.current_config and LLAMA_CPP_STORAGE.current_config["chat_handler"] in [
-                "Qwen3.5", "Qwen3.5-Thinking", "Qwen3.6", "Qwen3.6-Thinking", "Qwen3.8", "Qwen3.8-Thinking"
-            ]:
-                LLAMA_CPP_STORAGE.llm.n_tokens = 0
-                LLAMA_CPP_STORAGE.llm._ctx.memory_clear(True)
-                if LLAMA_CPP_STORAGE.llm.is_hybrid and LLAMA_CPP_STORAGE.llm._hybrid_cache_mgr is not None:
-                    LLAMA_CPP_STORAGE.llm._hybrid_cache_mgr.clear()
+        elif h3_mode == "off":
+            clear_qwen_context()
                     
         del messages
         gc.collect()
@@ -764,7 +771,10 @@ class llama_cpp_parameters:
     def INPUT_TYPES(s):
         return {
             "required": {
-                "max_tokens": ("INT", {"default": 1024, "min": 0, "max": 4096, "step": 1}),
+                "max_tokens": ("INT", {
+                    "default": 4096, "min": 0, "max": 32768, "step": 1,
+                    "tooltip": "Generated tokens per completion, including thinking. 0 uses the available context. Set n_ctx for the prompt and output combined.",
+                }),
                 "top_k": ("INT", {"default": 30, "min": 0, "max": 1000, "step": 1}),
                 "top_p": ("FLOAT", {"default": 0.9, "min": 0.0, "max": 1.0, "step": 0.01}),
                 "min_p": ("FLOAT", {"default": 0.05, "min": 0.0, "max": 1.0, "step": 0.01}),
