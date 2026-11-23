@@ -149,6 +149,16 @@ class H3Tests(unittest.TestCase):
         self.assertEqual(enhance_story("auto", "Brief", [], complete, video_input=False), draft)
         self.assertEqual(complete.call_count, 3)
 
+    def test_summary_with_only_a_marker_uses_the_existing_shot_description(self):
+        draft = ("subject_definitions: Source.\nsummary:\n[reference generation]\n\n"
+                 "retention_analysis: Source.\ndetailed_description: [Shot 1] A low camera follows the orange plate into a stripe of light.\n"
+                 "overall_soundscape: Rain.\nnon_diegetic_music: N/A")
+        complete = Mock(side_effect=[('{"mode":"1ref2va","template":0,"task_types":["reference generation"]}', "stop"),
+                                     ("Plan", "stop"), (draft, "stop")])
+        result = enhance_story("auto", "Brief", [], complete, video_input=False)
+        self.assertIn("[reference generation] A low camera follows the orange plate into a stripe of light.\n\nretention_analysis:", result)
+        self.assertEqual(complete.call_count, 3)
+
 
 class T8CatalogTests(unittest.TestCase):
     def setUp(self):

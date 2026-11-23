@@ -135,8 +135,13 @@ def _normalize_format(prompt, fields, task_types):
     names = "|".join(fields)
     # Accept plain headers and either common placement of Markdown bold markers.
     header = rf"^[ \t]*(?:\*\*({names})[ \t]*:\*\*|\*\*({names})\*\*[ \t]*:|({names})[ \t]*:)"
-    prompt = re.sub(header, lambda match: (match[1] or match[2] or match[3]).lower() + ":",
-                    prompt, flags=re.MULTILINE | re.IGNORECASE)
+    plain_fields = set(re.findall(r"^([a-z_]+):", prompt, flags=re.MULTILINE))
+
+    def normalize_header(match):
+        name = (match[1] or match[2] or match[3]).lower()
+        return match[0] if name in plain_fields else name + ":"
+
+    prompt = re.sub(header, normalize_header, prompt, flags=re.MULTILINE | re.IGNORECASE)
     if fields != REF_FIELDS:
         return prompt
 
@@ -150,7 +155,16 @@ def _normalize_format(prompt, fields, task_types):
         # Preserve the model's explicit task selection and normalize its spelling.
         tasks = [part.strip().lower() for part in bracket[1].split("+")]
         if all(task in REF_TASKS for task in tasks):
-            return prompt[:offset] + "[" + " + ".join(tasks) + "] " + body[bracket.end():].lstrip() + prompt[summary.end(1):]
+            content = body[bracket.end():]
+            if not content.strip():
+                # Supply a missing summary sentence from the draft itself.
+                detail = re.search(r"^detailed_description:(.*?)(?=^[a-z_]+:|\Z)", prompt, flags=re.MULTILINE | re.DOTALL)
+                description = re.sub(r"^\[Shot 1\]\s*", "", detail[1].strip()) if detail else ""
+                sentence = re.search(r"[^\n.!?][^\n]*?[.!?](?=\s|$)", description)
+                if not sentence or not 24 <= len(sentence[0]) <= 350 or "<d>" in sentence[0]:
+                    return prompt
+                content = sentence[0] + content
+            return prompt[:offset] + "[" + " + ".join(tasks) + "] " + content.lstrip() + prompt[summary.end(1):]
     elif not body.startswith("[") and isinstance(task_types, list) and task_types and all(task in REF_TASKS for task in task_types):
         # The router has already identified the role, so no text needs regenerating.
         separator = " " if offset == summary.start(1) else ""

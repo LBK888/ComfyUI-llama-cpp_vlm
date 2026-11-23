@@ -57,7 +57,7 @@ Instruct 的文字和影像輸出都會移除思考區段，包含 Qwen 模板�
 
 啟用後每筆輸入會用同一個本地模型推理三輪。第一輪從至多八個相關 T8 模板中選一個，也可沿用故事本身的結構。第二輪根據任務短指南補強事件因果、分鏡、拍攝和聲音。第三輪以原始需求和分鏡計畫寫成對應的 H3 格式，並在寫作時核對連戲、時間和指定台詞。節點會先在本地修正可以明確判定的欄位格式和任務標記，其餘格式問題至多補寫一輪。未指定長度時使用 15 秒。兩個 `STRING` 輸出只提供成稿。`images` 推理模式可將所有參考圖按輸入順序交給同一個故事，接圖時需要 VLM 和對應的 `mmproj`。如果素材只會在下游提供，可在原始需求寫明每份素材的名稱與用途。
 
-使用支援 `reasoning_budget` 的 Qwen3.5／3.6／3.8 Thinking 後端時，H3 將分類、分鏡、成稿和補寫的思考上限設為 96、384、768、192 tokens。各輪仍使用工作流的 `max_tokens` 作為總輸出上限。ComfyUI 日誌會列出每輪耗時、prompt 和 completion 用量、思考上限與結束原因。
+使用支援 `reasoning_budget` 的 Qwen3.5／3.6／3.8 Thinking 後端時，H3 將分類、分鏡、成稿和補寫的思考上限設為 96、384、768、192 tokens。各輪仍使用工作流的 `max_tokens` 作為總輸出上限。Ref2VA 摘要只有任務標記時，可以從已寫好的分鏡取一句完整描述補上。ComfyUI 日誌會列出每輪耗時、prompt 和 completion 用量、思考上限與結束原因。
 
 H3 支援離線使用。短指南參考 [MiniMax H3 官方寫作指南](https://github.com/MiniMax-AI/MiniMax-H3/tree/main/skills/h3-prompt-writing) 和 `my ref2AV system prompt.txt`。內建模板取自 [T8 Creative DNA Prompt Library](https://github.com/T8mars/minimax-h3-prompt-skill-T8/tree/5882fc3)，依 [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/) 重整為 277 張可搜尋的摘要卡，保留標題、關鍵字、故事機制與結構重點。
 
