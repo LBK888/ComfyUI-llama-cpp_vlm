@@ -7,10 +7,10 @@ import time
 _logger = logging.getLogger("llama-cpp_vlm")
 _think_tag = re.compile(r"<\s*(/?)\s*think\s*>", re.IGNORECASE)
 _H3_REASONING_BUDGETS = {
-    "H3 routing": 96,
-    "H3 story planning": 384,
-    "H3 prompt writing": 768,
-    "H3 format correction": 192,
+    "H3 routing": 288,
+    "H3 story planning": 1152,
+    "H3 prompt writing": 2304,
+    "H3 format correction": 576,
 }
 
 

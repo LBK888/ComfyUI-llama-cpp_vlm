@@ -44,8 +44,8 @@ class CompletionTests(unittest.TestCase):
 
         backend = Backend()
         params = {"max_tokens": 16000}
-        budgets = {"H3 routing": 96, "H3 story planning": 384, "H3 prompt writing": 768,
-                   "H3 format correction": 192, "Instruct": -1}
+        budgets = {"H3 routing": 288, "H3 story planning": 1152, "H3 prompt writing": 2304,
+                   "H3 format correction": 576, "Instruct": -1}
         for stage, budget in budgets.items():
             with self.subTest(stage=stage):
                 complete_instruct(backend, [], 0, params, stage=stage, prefilled_thinking=True)
