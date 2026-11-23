@@ -131,6 +131,33 @@ def _format_issue(prompt, mode, fields):
     return None
 
 
+def _normalize_format(prompt, fields, task_types):
+    names = "|".join(fields)
+    # Accept plain headers and either common placement of Markdown bold markers.
+    header = rf"^[ \t]*(?:\*\*({names})[ \t]*:\*\*|\*\*({names})\*\*[ \t]*:|({names})[ \t]*:)"
+    prompt = re.sub(header, lambda match: (match[1] or match[2] or match[3]).lower() + ":",
+                    prompt, flags=re.MULTILINE | re.IGNORECASE)
+    if fields != REF_FIELDS:
+        return prompt
+
+    summary = re.search(r"^summary:(.*?)(?=^[a-z_]+:|\Z)", prompt, flags=re.MULTILINE | re.DOTALL)
+    if not summary or not summary[1].strip():
+        return prompt
+    body = summary[1].lstrip()
+    offset = summary.end(1) - len(body)
+    bracket = re.match(r"\[([^\]]+)\]", body)
+    if bracket:
+        # Preserve the model's explicit task selection and normalize its spelling.
+        tasks = [part.strip().lower() for part in bracket[1].split("+")]
+        if all(task in REF_TASKS for task in tasks):
+            return prompt[:offset] + "[" + " + ".join(tasks) + "] " + body[bracket.end():].lstrip() + prompt[summary.end(1):]
+    elif not body.startswith("[") and isinstance(task_types, list) and task_types and all(task in REF_TASKS for task in task_types):
+        # The router has already identified the role, so no text needs regenerating.
+        separator = " " if offset == summary.start(1) else ""
+        return prompt[:offset] + separator + "[" + " + ".join(dict.fromkeys(task_types)) + "] " + prompt[offset:]
+    return prompt
+
+
 def enhance_story(mode, user_content, history, complete, *, video_input):
     if mode not in H3_MODES[1:]:
         raise ValueError(f"Unknown H3_story_enhancer mode: {mode}")
@@ -151,8 +178,9 @@ def enhance_story(mode, user_content, history, complete, *, video_input):
     candidates = _search_templates(brief)
     choices = "\n".join(f"{idx}. {card['title']} / {card['title_zh']}" for idx, card in enumerate(candidates, 1))
     modes = "\n".join(f"{name}: {definition}" for name, definition in _MODES.items())
-    route = _stage_answer(complete, "H3 routing", f"""Choose the generation mode and one reusable story pattern for the brief. Return only a JSON object with keys mode (string) and template (integer). Pick 0 for template when none fits the original plot and timing.
+    route = _stage_answer(complete, "H3 routing", f"""Choose the generation mode and one reusable story pattern for the brief. Return only a JSON object with mode (string), template (integer), and task_types (array of strings). Pick 0 for template when none fits the original plot and timing.
 The node's mode setting is {mode}. Use that mode exactly when it is fixed. For auto, choose one of the modes below. Distinguish identity or style references from explicitly anchored opening/ending frames. Attached images without an explicit frame role are reference assets. Count named downstream assets as well as attachments without double-counting. A sampled video is one source asset.
+For Ref2VA fill task_types with the roles clearly established by the brief. Use only: {', '.join(REF_TASKS)}. An appearance-only reference is ["reference generation"]. Use [] when the role is uncertain or the mode is not Ref2VA.
 {modes}
 Candidate story patterns:
 0. No pattern
@@ -182,11 +210,20 @@ Story pattern: {pattern}""", story)
     fields = REF_FIELDS if mode.endswith("ref2va") else BASE_FIELDS
     writing_guide = writing_system_prompt(mode, fields)
     prompt = _stage_answer(complete, "H3 prompt writing", writing_guide, f"{story}\n\nShooting plan:\n{plan}", history=history, media=media)
+    task_types = selection.get("task_types")
     issue = _format_issue(prompt, mode, fields)
     if issue:
+        normalized = _normalize_format(prompt, fields, task_types)
+        if not _format_issue(normalized, mode, fields):
+            _logger.info("H3 applied local formatting to the %s prompt.", mode)
+            return normalized
+        _logger.info("H3 format correction requested for %s: %s", mode, issue)
         repair = f"{writing_guide}\n\nCorrect the draft's output format. {issue} Keep its established visuals and the original brief."
         prompt = _stage_answer(complete, "H3 format correction", repair, f"{story}\n\nDraft:\n{prompt}")
         issue = _format_issue(prompt, mode, fields)
         if issue:
-            raise RuntimeError(f"H3 format correction returned an invalid {mode} prompt. {issue}")
+            prompt = _normalize_format(prompt, fields, task_types)
+            issue = _format_issue(prompt, mode, fields)
+            if issue:
+                raise RuntimeError(f"H3 format correction returned an invalid {mode} prompt. {issue}")
     return prompt

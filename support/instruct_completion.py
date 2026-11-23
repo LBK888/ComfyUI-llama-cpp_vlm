@@ -1,9 +1,17 @@
+import inspect
 import logging
 import re
+import time
 
 
 _logger = logging.getLogger("llama-cpp_vlm")
 _think_tag = re.compile(r"<\s*(/?)\s*think\s*>", re.IGNORECASE)
+_H3_REASONING_BUDGETS = {
+    "H3 routing": 96,
+    "H3 story planning": 384,
+    "H3 prompt writing": 768,
+    "H3 format correction": 192,
+}
 
 
 def _answer_text(content, *, truncated, prefilled_thinking, structured_reasoning):
@@ -35,7 +43,16 @@ def _answer_text(content, *, truncated, prefilled_thinking, structured_reasoning
 
 
 def complete_instruct(llm, messages, seed, parameters, *, stage, prefilled_thinking):
-    result = llm.create_chat_completion(messages=messages, seed=seed, **parameters)
+    options = parameters
+    stage_budget = _H3_REASONING_BUDGETS.get(stage)
+    if stage_budget is not None and prefilled_thinking:
+        supported = inspect.signature(llm.create_chat_completion).parameters
+        if {"reasoning_budget", "reasoning_start_in_prompt"} <= supported.keys():
+            requested = parameters.get("reasoning_budget", -1)
+            budget = min(stage_budget, requested) if isinstance(requested, int) and requested >= 0 else stage_budget
+            options = {**parameters, "reasoning_budget": budget, "reasoning_start_in_prompt": True}
+    started = time.perf_counter()
+    result = llm.create_chat_completion(messages=messages, seed=seed, **options)
     choice = result["choices"][0]
     message = choice["message"]
     reason = choice.get("finish_reason")
@@ -45,8 +62,14 @@ def complete_instruct(llm, messages, seed, parameters, *, stage, prefilled_think
         prefilled_thinking=prefilled_thinking,
         structured_reasoning=any(message.get(key) is not None for key in ("reasoning", "reasoning_content")),
     )
+    usage = result.get("usage") or {}
+    if stage_budget is not None:
+        _logger.info(
+            "%s: %.1fs, prompt_tokens=%s, completion_tokens=%s, reasoning_budget=%s, finish_reason=%s",
+            stage, time.perf_counter() - started, usage.get("prompt_tokens", "unknown"),
+            usage.get("completion_tokens", "unknown"), options.get("reasoning_budget", "backend default"), reason,
+        )
     if reason == "length" or not answer:
-        usage = result.get("usage") or {}
         _logger.warning(
             "%s: %s (finish_reason=%s, max_tokens=%s, n_ctx=%s, prompt_tokens=%s, completion_tokens=%s). %s",
             stage,

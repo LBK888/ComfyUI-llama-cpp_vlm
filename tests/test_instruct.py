@@ -35,6 +35,25 @@ class CompletionTests(unittest.TestCase):
             result = self.complete("Partial answer", reason="length", prefill=True, reasoning_content="Some reasoning")
         self.assertEqual(result, ("Partial answer", "length"))
 
+    def test_h3_caps_prefilled_thinking_per_stage_and_keeps_output_budget(self):
+        class Backend:
+            def create_chat_completion(self, *, messages, seed, max_tokens,
+                                       reasoning_budget=-1, reasoning_start_in_prompt=False):
+                self.options = (max_tokens, reasoning_budget, reasoning_start_in_prompt)
+                return {"choices": [{"message": {"content": "Answer"}, "finish_reason": "stop"}]}
+
+        backend = Backend()
+        params = {"max_tokens": 16000}
+        budgets = {"H3 routing": 96, "H3 story planning": 384, "H3 prompt writing": 768,
+                   "H3 format correction": 192, "Instruct": -1}
+        for stage, budget in budgets.items():
+            with self.subTest(stage=stage):
+                complete_instruct(backend, [], 0, params, stage=stage, prefilled_thinking=True)
+                self.assertEqual(backend.options, (16000, budget, budget != -1))
+        complete_instruct(backend, [], 0, params, stage="H3 routing", prefilled_thinking=False)
+        self.assertEqual(backend.options, (16000, -1, False))
+        self.assertEqual(params, {"max_tokens": 16000})
+
     def complete(self, content, reason="stop", prefill=False, **fields):
         llm = Mock()
         llm.n_ctx.return_value = 32768
@@ -109,6 +128,26 @@ class H3Tests(unittest.TestCase):
         self.assertEqual(enhance_story("auto", "Brief", [], complete, video_input=False), fixed)
         self.assertEqual(complete.call_args.args[1], "H3 format correction")
         self.assertIn("Start the summary body with the H3 task prefix", complete.call_args.args[0][0]["content"])
+
+    def test_local_repairs_preserve_story_and_avoid_another_model_call(self):
+        draft = ("**Subject_Definitions:** Source.\n**summary**:\nAction.\n"
+                 "retention_analysis: Source.\ndetailed_description: [Shot 1] <d>[Chinese] 原句。</d>\n"
+                 "overall_soundscape: Rain.\nnon_diegetic_music: N/A")
+        complete = Mock(side_effect=[('{"mode":"1ref2va","template":0,"task_types":["reference generation","audio reference"]}', "stop"),
+                                     ("Plan", "stop"), (draft, "stop")])
+        result = enhance_story("auto", "Brief", [], complete, video_input=False)
+        self.assertEqual(complete.call_count, 3)
+        self.assertEqual(result, draft.replace("**Subject_Definitions:**", "subject_definitions:")
+                         .replace("**summary**:\n", "summary:\n[reference generation + audio reference] "))
+
+    def test_valid_output_with_an_indented_body_label_needs_no_repair(self):
+        draft = ("subject_definitions: Source.\nsummary: [reference generation] Action.\n"
+                 "retention_analysis: Source.\ndetailed_description: [Shot 1] Action.\n"
+                 "    summary: This phrase is visible on the sign.\n"
+                 "overall_soundscape: Rain.\nnon_diegetic_music: N/A")
+        complete = Mock(side_effect=[('{"mode":"1ref2va","template":0}', "stop"), ("Plan", "stop"), (draft, "stop")])
+        self.assertEqual(enhance_story("auto", "Brief", [], complete, video_input=False), draft)
+        self.assertEqual(complete.call_count, 3)
 
 
 class T8CatalogTests(unittest.TestCase):
