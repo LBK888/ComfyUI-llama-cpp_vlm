@@ -6,7 +6,7 @@ from functools import lru_cache
 from pathlib import Path
 
 from .h3_system_prompts import (
-    ALIGNMENTS, BASE_FIELDS, MODE_GUIDES, PRESERVE_BRIEF, REF_FIELDS, REF_TASKS, writing_system_prompt,
+    ALIGNMENTS, BASE_FIELDS, MODE_GUIDES, PRESERVE_BRIEF, REF_FIELDS, REF_TASKS, STAGING, writing_system_prompt,
 )
 
 
@@ -216,8 +216,9 @@ Candidate story patterns:
         anchors = " / ".join(card["anchors"])
         pattern = f"{card['title']}: {card['mechanism']}\nStructure cues: {anchors}"
 
-    plan = _stage_answer(complete, "H3 story planning", f"""Turn the brief into a concise shooting plan in the user's language. Use the supplied pattern only where it supports the story. Preserve the user's intent over any template cue. Give each beat a visible action and consequence, coherent staging, a motivated camera decision and sound when useful. Track reference roles, dialogue, and continuity. Check that actions and dialogue fit the requested runtime. Return the plan only.
+    plan = _stage_answer(complete, "H3 story planning", f"""Turn the brief into a concise shooting plan in the user's language. Use the supplied pattern only where it supports the story. Preserve the user's intent over any template cue. Give each beat a visible action and consequence, coherent staging, a motivated camera decision and sound when useful. Map each line to its speaker and each reference to its requested role. Leave unspecified visual traits of unseen assets for the writing stage. Return the plan only.
 {PRESERVE_BRIEF}
+{STAGING}
 Mode: {_MODES[mode]} {MODE_GUIDES[mode]}
 Story pattern: {pattern}""", story)
 
